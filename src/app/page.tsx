@@ -391,11 +391,8 @@ export default function Home() {
 
       const modifiedPdfBytes = await pdfDoc.save();
       
-      const arrayBuffer = modifiedPdfBytes.buffer.slice(
-        modifiedPdfBytes.byteOffset,
-        modifiedPdfBytes.byteOffset + modifiedPdfBytes.byteLength
-      );
-      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      // Create a new Uint8Array to ensure compatibility with Blob constructor
+      const blob = new Blob([new Uint8Array(modifiedPdfBytes)], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
