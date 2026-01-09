@@ -216,7 +216,7 @@ export default function Home() {
       const modifiedPdfBytes = await pdfDoc.save();
       
       // Download the PDF
-      const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+      const blob = new Blob([modifiedPdfBytes.buffer], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
