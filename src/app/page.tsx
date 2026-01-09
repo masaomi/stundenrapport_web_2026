@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { PDFDocument } from 'pdf-lib';
 
 interface TimeSlot {
@@ -20,6 +20,11 @@ interface PersonalInfo {
   persnr: string;
   jahr: string;
   monat: string;
+}
+
+interface CellPosition {
+  day: number;
+  col: number;
 }
 
 const MONTHS = [
@@ -61,7 +66,6 @@ function calculateMinutes(von: string, bis: string): number {
   if (endMin >= startMin) {
     return endMin - startMin;
   } else {
-    // Overnight
     return (24 * 60 - startMin) + endMin;
   }
 }
@@ -77,13 +81,11 @@ function createEmptyDayEntries(): DayEntry[] {
   }));
 }
 
-// Convert cell position to day/slot/field
-function getCellPosition(day: number, colIndex: number): { day: number; slotIndex: number; field: 'von' | 'bis' } | null {
-  // colIndex: 0=von1, 1=bis1, 2=von2, 3=bis2, 4=von3, 5=bis3
-  if (colIndex < 0 || colIndex > 5) return null;
-  const slotIndex = Math.floor(colIndex / 2);
-  const field = colIndex % 2 === 0 ? 'von' : 'bis';
-  return { day, slotIndex, field };
+function getCellValue(dayEntries: DayEntry[], day: number, col: number): string {
+  if (col < 0 || col > 5) return '';
+  const slotIndex = Math.floor(col / 2);
+  const field = col % 2 === 0 ? 'von' : 'bis';
+  return dayEntries[day - 1].slots[slotIndex][field];
 }
 
 export default function Home() {
@@ -98,7 +100,12 @@ export default function Home() {
   
   const [dayEntries, setDayEntries] = useState<DayEntry[]>(createEmptyDayEntries());
   const [isGenerating, setIsGenerating] = useState(false);
-  const [status, setStatus] = useState('Ready - Paste from Excel supported (Ctrl+V / Cmd+V)');
+  const [status, setStatus] = useState('Ready - Drag to select cells, then Ctrl+C/Cmd+C to copy');
+  
+  // Selection state
+  const [selectionStart, setSelectionStart] = useState<CellPosition | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
   const inputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
 
   const calculateDayMinutes = useCallback((day: number): number => {
@@ -114,6 +121,27 @@ export default function Home() {
 
   const totalHours = Math.floor(totalMinutes / 60);
   const remainingMinutes = totalMinutes % 60;
+
+  // Check if a cell is selected
+  const isCellSelected = useCallback((day: number, col: number): boolean => {
+    if (!selectionStart || !selectionEnd) return false;
+    const minDay = Math.min(selectionStart.day, selectionEnd.day);
+    const maxDay = Math.max(selectionStart.day, selectionEnd.day);
+    const minCol = Math.min(selectionStart.col, selectionEnd.col);
+    const maxCol = Math.max(selectionStart.col, selectionEnd.col);
+    return day >= minDay && day <= maxDay && col >= minCol && col <= maxCol;
+  }, [selectionStart, selectionEnd]);
+
+  // Get selected range
+  const getSelectedRange = useCallback(() => {
+    if (!selectionStart || !selectionEnd) return null;
+    return {
+      minDay: Math.min(selectionStart.day, selectionEnd.day),
+      maxDay: Math.max(selectionStart.day, selectionEnd.day),
+      minCol: Math.min(selectionStart.col, selectionEnd.col),
+      maxCol: Math.max(selectionStart.col, selectionEnd.col),
+    };
+  }, [selectionStart, selectionEnd]);
 
   const updateTimeSlot = (day: number, slotIndex: number, field: 'von' | 'bis', value: string) => {
     setDayEntries(prev => {
@@ -136,15 +164,80 @@ export default function Home() {
     });
   };
 
-  // Handle paste from Excel (tab-separated values)
-  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>, day: number, colIndex: number) => {
+  // Handle cell mouse down - start selection
+  const handleCellMouseDown = (day: number, col: number, e: React.MouseEvent) => {
+    // Only start selection on left click
+    if (e.button !== 0) return;
+    
+    setSelectionStart({ day, col });
+    setSelectionEnd({ day, col });
+    setIsSelecting(true);
+  };
+
+  // Handle cell mouse enter during selection
+  const handleCellMouseEnter = (day: number, col: number) => {
+    if (isSelecting) {
+      setSelectionEnd({ day, col });
+    }
+  };
+
+  // Handle mouse up - end selection
+  useEffect(() => {
+    const handleMouseUp = () => {
+      setIsSelecting(false);
+    };
+    
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => window.removeEventListener('mouseup', handleMouseUp);
+  }, []);
+
+  // Handle keyboard copy
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Copy: Ctrl+C or Cmd+C
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        const range = getSelectedRange();
+        if (range) {
+          e.preventDefault();
+          
+          // Build tab-separated text
+          const rows: string[] = [];
+          for (let day = range.minDay; day <= range.maxDay; day++) {
+            const cols: string[] = [];
+            for (let col = range.minCol; col <= range.maxCol; col++) {
+              cols.push(getCellValue(dayEntries, day, col));
+            }
+            rows.push(cols.join('\t'));
+          }
+          const text = rows.join('\n');
+          
+          navigator.clipboard.writeText(text).then(() => {
+            const cellCount = (range.maxDay - range.minDay + 1) * (range.maxCol - range.minCol + 1);
+            setStatus(`Copied ${cellCount} cell(s) to clipboard`);
+          });
+        }
+      }
+      
+      // Paste: Ctrl+V or Cmd+V (handled by input onPaste)
+      
+      // Clear selection on Escape
+      if (e.key === 'Escape') {
+        setSelectionStart(null);
+        setSelectionEnd(null);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [dayEntries, getSelectedRange]);
+
+  // Handle paste from clipboard
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>, day: number, col: number) => {
     const pastedText = e.clipboardData.getData('text');
     
-    // Check if it's multi-cell paste (contains tabs or newlines)
     if (pastedText.includes('\t') || pastedText.includes('\n')) {
       e.preventDefault();
       
-      // Parse rows and columns
       const rows = pastedText.trim().split(/\r?\n/);
       
       setDayEntries(prev => {
@@ -156,18 +249,19 @@ export default function Home() {
           
           const cells = row.split('\t');
           cells.forEach((cellValue, cellOffset) => {
-            const targetCol = colIndex + cellOffset;
-            const pos = getCellPosition(targetDay, targetCol);
+            const targetCol = col + cellOffset;
+            if (targetCol > 5) return;
             
-            if (pos && pos.day <= 31) {
-              const value = cellValue.trim();
-              newEntries[pos.day - 1] = {
-                ...newEntries[pos.day - 1],
-                slots: newEntries[pos.day - 1].slots.map((slot, i) =>
-                  i === pos.slotIndex ? { ...slot, [pos.field]: value } : slot
-                ),
-              };
-            }
+            const slotIndex = Math.floor(targetCol / 2);
+            const field = targetCol % 2 === 0 ? 'von' : 'bis';
+            const value = cellValue.trim();
+            
+            newEntries[targetDay - 1] = {
+              ...newEntries[targetDay - 1],
+              slots: newEntries[targetDay - 1].slots.map((slot, i) =>
+                i === slotIndex ? { ...slot, [field]: value } : slot
+              ),
+            };
           });
         });
         
@@ -176,45 +270,35 @@ export default function Home() {
       
       setStatus(`Pasted ${rows.length} row(s) from clipboard`);
     }
-    // Single cell paste is handled normally by the browser
   };
 
-  // Handle keyboard navigation
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, day: number, colIndex: number) => {
+  // Handle keyboard navigation in input
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, day: number, col: number) => {
     const getInputRef = (d: number, c: number) => `input-${d}-${c}`;
-    
-    if (e.key === 'Tab') {
-      // Default tab behavior
-      return;
-    }
     
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
       e.preventDefault();
-      const nextDay = day + 1;
-      if (nextDay <= 31) {
-        const ref = inputRefs.current[getInputRef(nextDay, colIndex)];
+      if (day < 31) {
+        const ref = inputRefs.current[getInputRef(day + 1, col)];
         ref?.focus();
         ref?.select();
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const prevDay = day - 1;
-      if (prevDay >= 1) {
-        const ref = inputRefs.current[getInputRef(prevDay, colIndex)];
+      if (day > 1) {
+        const ref = inputRefs.current[getInputRef(day - 1, col)];
         ref?.focus();
         ref?.select();
       }
     } else if (e.key === 'ArrowRight' && e.currentTarget.selectionStart === e.currentTarget.value.length) {
-      const nextCol = colIndex + 1;
-      if (nextCol <= 5) {
-        const ref = inputRefs.current[getInputRef(day, nextCol)];
+      if (col < 5) {
+        const ref = inputRefs.current[getInputRef(day, col + 1)];
         ref?.focus();
         ref?.select();
       }
     } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
-      const prevCol = colIndex - 1;
-      if (prevCol >= 0) {
-        const ref = inputRefs.current[getInputRef(day, prevCol)];
+      if (col > 0) {
+        const ref = inputRefs.current[getInputRef(day, col - 1)];
         ref?.focus();
         ref?.select();
       }
@@ -224,8 +308,16 @@ export default function Home() {
   const clearAll = () => {
     if (confirm('Clear all entries?')) {
       setDayEntries(createEmptyDayEntries());
+      setSelectionStart(null);
+      setSelectionEnd(null);
       setStatus('Cleared');
     }
+  };
+
+  // Clear selection when clicking outside
+  const clearSelection = () => {
+    setSelectionStart(null);
+    setSelectionEnd(null);
   };
 
   const generatePDF = async () => {
@@ -233,15 +325,12 @@ export default function Home() {
     setStatus('Generating PDF...');
 
     try {
-      // Fetch the PDF template
       const response = await fetch('/Stundenrapport.pdf');
       const pdfBytes = await response.arrayBuffer();
       
-      // Load the PDF
       const pdfDoc = await PDFDocument.load(pdfBytes);
       const form = pdfDoc.getForm();
 
-      // Fill personal info
       const setTextField = (name: string, value: string) => {
         try {
           const field = form.getTextField(name);
@@ -257,7 +346,6 @@ export default function Home() {
       setTextField('allg.persnr', personalInfo.persnr);
       setTextField('allg.jahr', personalInfo.jahr);
 
-      // Set month dropdown
       try {
         const monatField = form.getDropdown('allg.monat');
         const monthLabel = MONTHS.find(m => m.value === personalInfo.monat)?.label || '';
@@ -267,10 +355,9 @@ export default function Home() {
           monatField.select(matchingOption);
         }
       } catch {
-        // Dropdown not found or error, skip
+        // Dropdown not found
       }
 
-      // Fill time entries
       for (let day = 1; day <= 31; day++) {
         const entry = dayEntries[day - 1];
         
@@ -280,37 +367,30 @@ export default function Home() {
           if (bis) setTextField(`tab.aus_${slot + 1}.${day}`, bis);
         }
 
-        // Daily total
         const dayMinutes = calculateDayMinutes(day);
         if (dayMinutes > 0) {
           setTextField(`tab.totall_dd.${day}`, dayMinutes.toString());
         }
 
-        // Remark
         if (entry.remark) {
           setTextField(`tab.bemerkung.${day}`, entry.remark);
         }
       }
 
-      // Fill totals
       setTextField('tab.totall_mm', totalMinutes.toString());
       setTextField('totall_dez', totalHours.toString());
 
-      // Flatten the form fields EXCEPT signature date fields
       const fields = form.getFields();
       for (const field of fields) {
         const name = field.getName();
-        // Keep signature date fields editable
         if (name === 'allg.datum.ma' || name === 'allg.datum.vg') {
           continue;
         }
         field.enableReadOnly();
       }
 
-      // Save the PDF
       const modifiedPdfBytes = await pdfDoc.save();
       
-      // Download the PDF - convert to ArrayBuffer for TypeScript compatibility
       const arrayBuffer = modifiedPdfBytes.buffer.slice(
         modifiedPdfBytes.byteOffset,
         modifiedPdfBytes.byteOffset + modifiedPdfBytes.byteLength
@@ -335,7 +415,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white select-none">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
         <header className="mb-8">
           <h1 className="text-3xl font-bold text-center bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
@@ -345,7 +425,7 @@ export default function Home() {
         </header>
 
         {/* Personal Information */}
-        <section className="bg-slate-800/50 backdrop-blur rounded-xl p-6 mb-6 border border-slate-700">
+        <section className="bg-slate-800/50 backdrop-blur rounded-xl p-6 mb-6 border border-slate-700" onClick={clearSelection}>
           <h2 className="text-lg font-semibold mb-4 text-cyan-400">Personal Information</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div>
@@ -354,7 +434,7 @@ export default function Home() {
                 type="text"
                 value={personalInfo.name}
                 onChange={(e) => setPersonalInfo(prev => ({ ...prev, name: e.target.value }))}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 select-text"
               />
             </div>
             <div>
@@ -363,7 +443,7 @@ export default function Home() {
                 type="text"
                 value={personalInfo.vorname}
                 onChange={(e) => setPersonalInfo(prev => ({ ...prev, vorname: e.target.value }))}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 select-text"
               />
             </div>
             <div>
@@ -373,7 +453,7 @@ export default function Home() {
                 placeholder="DD.MM.YYYY"
                 value={personalInfo.gebdat}
                 onChange={(e) => setPersonalInfo(prev => ({ ...prev, gebdat: e.target.value }))}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 select-text"
               />
             </div>
             <div>
@@ -382,7 +462,7 @@ export default function Home() {
                 type="text"
                 value={personalInfo.persnr}
                 onChange={(e) => setPersonalInfo(prev => ({ ...prev, persnr: e.target.value }))}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 select-text"
               />
             </div>
             <div>
@@ -391,7 +471,7 @@ export default function Home() {
                 type="text"
                 value={personalInfo.jahr}
                 onChange={(e) => setPersonalInfo(prev => ({ ...prev, jahr: e.target.value }))}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500 select-text"
               />
             </div>
             <div>
@@ -416,7 +496,7 @@ export default function Home() {
         <section className="bg-slate-800/50 backdrop-blur rounded-xl p-6 mb-6 border border-slate-700">
           <h2 className="text-lg font-semibold mb-2 text-cyan-400">Working Hours (HH:MM format)</h2>
           <p className="text-sm text-slate-500 mb-4">
-            💡 Tip: Copy cells from Excel and paste here. Use Arrow keys to navigate.
+            💡 Drag to select cells → Ctrl+C/Cmd+C to copy → Click target cell → Ctrl+V/Cmd+V to paste
           </p>
           
           {/* Header */}
@@ -446,26 +526,40 @@ export default function Home() {
                   <div className="text-center font-medium text-slate-300">{day}</div>
                   {[0, 1, 2].map(slotIndex => (
                     <div key={`${day}-slot-${slotIndex}`} className="contents">
-                      <input
-                        ref={(el) => { inputRefs.current[`input-${day}-${slotIndex * 2}`] = el; }}
-                        type="text"
-                        placeholder="HH:MM"
-                        value={dayEntries[day - 1].slots[slotIndex].von}
-                        onChange={(e) => updateTimeSlot(day, slotIndex, 'von', e.target.value)}
-                        onPaste={(e) => handlePaste(e, day, slotIndex * 2)}
-                        onKeyDown={(e) => handleKeyDown(e, day, slotIndex * 2)}
-                        className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-center text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                      />
-                      <input
-                        ref={(el) => { inputRefs.current[`input-${day}-${slotIndex * 2 + 1}`] = el; }}
-                        type="text"
-                        placeholder="HH:MM"
-                        value={dayEntries[day - 1].slots[slotIndex].bis}
-                        onChange={(e) => updateTimeSlot(day, slotIndex, 'bis', e.target.value)}
-                        onPaste={(e) => handlePaste(e, day, slotIndex * 2 + 1)}
-                        onKeyDown={(e) => handleKeyDown(e, day, slotIndex * 2 + 1)}
-                        className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-center text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                      />
+                      {/* von */}
+                      <div
+                        onMouseDown={(e) => handleCellMouseDown(day, slotIndex * 2, e)}
+                        onMouseEnter={() => handleCellMouseEnter(day, slotIndex * 2)}
+                        className={`relative ${isCellSelected(day, slotIndex * 2) ? 'ring-2 ring-cyan-400 ring-offset-1 ring-offset-slate-900 rounded' : ''}`}
+                      >
+                        <input
+                          ref={(el) => { inputRefs.current[`input-${day}-${slotIndex * 2}`] = el; }}
+                          type="text"
+                          placeholder="HH:MM"
+                          value={dayEntries[day - 1].slots[slotIndex].von}
+                          onChange={(e) => updateTimeSlot(day, slotIndex, 'von', e.target.value)}
+                          onPaste={(e) => handlePaste(e, day, slotIndex * 2)}
+                          onKeyDown={(e) => handleKeyDown(e, day, slotIndex * 2)}
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-center text-sm focus:outline-none focus:border-cyan-500 select-text"
+                        />
+                      </div>
+                      {/* bis */}
+                      <div
+                        onMouseDown={(e) => handleCellMouseDown(day, slotIndex * 2 + 1, e)}
+                        onMouseEnter={() => handleCellMouseEnter(day, slotIndex * 2 + 1)}
+                        className={`relative ${isCellSelected(day, slotIndex * 2 + 1) ? 'ring-2 ring-cyan-400 ring-offset-1 ring-offset-slate-900 rounded' : ''}`}
+                      >
+                        <input
+                          ref={(el) => { inputRefs.current[`input-${day}-${slotIndex * 2 + 1}`] = el; }}
+                          type="text"
+                          placeholder="HH:MM"
+                          value={dayEntries[day - 1].slots[slotIndex].bis}
+                          onChange={(e) => updateTimeSlot(day, slotIndex, 'bis', e.target.value)}
+                          onPaste={(e) => handlePaste(e, day, slotIndex * 2 + 1)}
+                          onKeyDown={(e) => handleKeyDown(e, day, slotIndex * 2 + 1)}
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-center text-sm focus:outline-none focus:border-cyan-500 select-text"
+                        />
+                      </div>
                     </div>
                   ))}
                   <div className={`text-center font-mono ${dayMinutes > 0 ? 'text-green-400' : 'text-slate-500'}`}>
@@ -475,7 +569,7 @@ export default function Home() {
                     type="text"
                     value={dayEntries[day - 1].remark}
                     onChange={(e) => updateRemark(day, e.target.value)}
-                    className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-cyan-500"
+                    className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-cyan-500 select-text"
                   />
                 </div>
               );
@@ -484,7 +578,7 @@ export default function Home() {
         </section>
 
         {/* Summary */}
-        <section className="bg-slate-800/50 backdrop-blur rounded-xl p-6 mb-6 border border-slate-700">
+        <section className="bg-slate-800/50 backdrop-blur rounded-xl p-6 mb-6 border border-slate-700" onClick={clearSelection}>
           <h2 className="text-lg font-semibold mb-4 text-cyan-400">Summary</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="text-center">
@@ -499,7 +593,7 @@ export default function Home() {
               <div className="text-slate-400 text-sm mb-1">Stunden Dezimal (Hours, floor)</div>
               <div className="text-3xl font-bold text-green-400">{totalHours}</div>
             </div>
-        </div>
+          </div>
         </section>
 
         {/* Actions */}
@@ -523,7 +617,7 @@ export default function Home() {
         <footer className="mt-8 text-center text-slate-500 text-sm">
           {status}
         </footer>
-        </div>
+      </div>
     </div>
   );
 }
