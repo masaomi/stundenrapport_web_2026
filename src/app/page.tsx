@@ -88,6 +88,29 @@ function getCellValue(dayEntries: DayEntry[], day: number, col: number): string 
   return dayEntries[day - 1].slots[slotIndex][field];
 }
 
+const STORAGE_KEY = 'stundenrapport_templates';
+
+interface Template {
+  name: string;
+  personalInfo: PersonalInfo;
+  savedAt: string;
+}
+
+function getTemplates(): Template[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTemplates(templates: Template[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+}
+
 export default function Home() {
   const [personalInfo, setPersonalInfo] = useState<PersonalInfo>({
     name: '',
@@ -107,6 +130,16 @@ export default function Home() {
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const inputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  
+  // Template state
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+
+  // Load templates from localStorage on mount
+  useEffect(() => {
+    setTemplates(getTemplates());
+  }, []);
 
   const calculateDayMinutes = useCallback((day: number): number => {
     const entry = dayEntries[day - 1];
@@ -318,6 +351,56 @@ export default function Home() {
   const clearSelection = () => {
     setSelectionStart(null);
     setSelectionEnd(null);
+  };
+
+  // Template functions
+  const saveTemplate = () => {
+    if (!templateName.trim()) {
+      setStatus('Please enter a template name');
+      return;
+    }
+    
+    const newTemplate: Template = {
+      name: templateName.trim(),
+      personalInfo: { ...personalInfo },
+      savedAt: new Date().toISOString(),
+    };
+    
+    // Check if template with same name exists
+    const existingIndex = templates.findIndex(t => t.name === newTemplate.name);
+    let updatedTemplates: Template[];
+    
+    if (existingIndex >= 0) {
+      updatedTemplates = [...templates];
+      updatedTemplates[existingIndex] = newTemplate;
+    } else {
+      updatedTemplates = [...templates, newTemplate];
+    }
+    
+    saveTemplates(updatedTemplates);
+    setTemplates(updatedTemplates);
+    setTemplateName('');
+    setShowTemplateModal(false);
+    setStatus(`Template "${newTemplate.name}" saved`);
+  };
+
+  const loadTemplate = (template: Template) => {
+    setPersonalInfo({
+      ...template.personalInfo,
+      jahr: new Date().getFullYear().toString(),
+      monat: (new Date().getMonth() + 1).toString(),
+    });
+    setShowTemplateModal(false);
+    setStatus(`Template "${template.name}" loaded`);
+  };
+
+  const deleteTemplate = (name: string) => {
+    if (confirm(`Delete template "${name}"?`)) {
+      const updatedTemplates = templates.filter(t => t.name !== name);
+      saveTemplates(updatedTemplates);
+      setTemplates(updatedTemplates);
+      setStatus(`Template "${name}" deleted`);
+    }
   };
 
   const generatePDF = async () => {
@@ -603,6 +686,12 @@ export default function Home() {
             {isGenerating ? 'Generating...' : 'Generate PDF'}
           </button>
           <button
+            onClick={() => setShowTemplateModal(true)}
+            className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 rounded-lg font-semibold transition-all shadow-lg shadow-emerald-500/25"
+          >
+            Templates
+          </button>
+          <button
             onClick={clearAll}
             className="px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold transition-all border border-slate-600"
           >
@@ -614,6 +703,81 @@ export default function Home() {
         <footer className="mt-8 text-center text-slate-500 text-sm">
           {status}
         </footer>
+
+        {/* Template Modal */}
+        {showTemplateModal && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowTemplateModal(false)}>
+            <div className="bg-slate-800 rounded-xl p-6 w-full max-w-md mx-4 border border-slate-600 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-xl font-bold text-cyan-400 mb-4">Templates</h3>
+              
+              {/* Save new template */}
+              <div className="mb-6">
+                <label className="block text-sm text-slate-400 mb-2">Save Current Info as Template</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={templateName}
+                    onChange={(e) => setTemplateName(e.target.value)}
+                    placeholder="Template name..."
+                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-cyan-500"
+                  />
+                  <button
+                    onClick={saveTemplate}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded font-medium transition-colors"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+              
+              {/* Saved templates list */}
+              <div>
+                <label className="block text-sm text-slate-400 mb-2">Saved Templates</label>
+                {templates.length === 0 ? (
+                  <p className="text-slate-500 text-sm italic">No templates saved yet</p>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {templates.map((template) => (
+                      <div
+                        key={template.name}
+                        className="flex items-center justify-between bg-slate-700/50 rounded-lg p-3 border border-slate-600"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-white truncate">{template.name}</div>
+                          <div className="text-xs text-slate-400">
+                            {template.personalInfo.name} {template.personalInfo.vorname}
+                          </div>
+                        </div>
+                        <div className="flex gap-2 ml-2">
+                          <button
+                            onClick={() => loadTemplate(template)}
+                            className="px-3 py-1 bg-cyan-600 hover:bg-cyan-700 rounded text-sm font-medium transition-colors"
+                          >
+                            Load
+                          </button>
+                          <button
+                            onClick={() => deleteTemplate(template.name)}
+                            className="px-3 py-1 bg-red-600/80 hover:bg-red-700 rounded text-sm font-medium transition-colors"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              {/* Close button */}
+              <button
+                onClick={() => setShowTemplateModal(false)}
+                className="mt-6 w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-lg font-medium transition-colors border border-slate-600"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
