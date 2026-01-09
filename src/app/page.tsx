@@ -463,14 +463,10 @@ export default function Home() {
       setTextField('tab.totall_mm', totalMinutes.toString());
       setTextField('totall_dez', totalHours.toString());
 
-      const fields = form.getFields();
-      for (const field of fields) {
-        const name = field.getName();
-        if (name === 'allg.datum.ma' || name === 'allg.datum.vg') {
-          continue;
-        }
-        field.enableReadOnly();
-      }
+      // Flatten the form to ensure fields are visible when printing
+      // Note: After flattening, signature date fields will also be read-only
+      // Use Mac Preview's annotation feature to add dates if needed
+      form.flatten();
 
       const modifiedPdfBytes = await pdfDoc.save();
       
